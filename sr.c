@@ -1,17 +1,17 @@
-/* sr.c – Selective Repeat, C90 clean, Gradescope sanity-pass */
+/* sr.c – Selective Repeat, C90 clean */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* ---------- parameters ---------- */
+/* ---------- 参数 ---------- */
 #define RTT 16.0
 #define WINDOWSIZE 6
 #define SEQSPACE (2 * WINDOWSIZE)
 #define NOTINUSE (-1)
 
-/* ---------- checksum helpers ---------- */
+/* ---------- 校验和 ---------- */
 static int ComputeChecksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
@@ -25,9 +25,10 @@ static bool IsCorrupted(struct pkt p) { return p.checksum != ComputeChecksum(p);
 /*****************************************************************
  *                         Sender  A
  *****************************************************************/
-static struct pkt buf[SEQSPACE];
+static struct pkt snd_buf[SEQSPACE];
 static bool acked[SEQSPACE];
-static int A_base, A_next;
+static int A_base;
+static int A_next;
 
 void A_init(void)
 {
@@ -48,7 +49,7 @@ void A_output(struct msg m)
         return;
     }
 
-    /* ---------- build packet ---------- */
+    /* build packet */
     struct pkt p;
     int k;
     p.seqnum = A_next;
@@ -57,7 +58,7 @@ void A_output(struct msg m)
         p.payload[k] = m.data[k];
     p.checksum = ComputeChecksum(p);
 
-    buf[p.seqnum] = p;
+    snd_buf[p.seqnum] = p; /* buffer */
     acked[p.seqnum] = false;
 
     if (TRACE > 1)
@@ -78,10 +79,10 @@ void A_input(struct pkt p)
         return;
     }
 
-    total_ACKs_received++; /* ← Gradescope 统计 */
+    total_ACKs_received++;
     new_ACKs++;
 
-    /* 窗口内？ */
+    /* window-in? */
     {
         int offset = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
         if (offset < WINDOWSIZE)
@@ -89,7 +90,7 @@ void A_input(struct pkt p)
             acked[p.acknum] = true;
 
             while (acked[A_base])
-            { /* 滑窗 */
+            {
                 acked[A_base] = false;
                 A_base = (A_base + 1) % SEQSPACE;
                 if (TRACE > 1)
@@ -115,7 +116,7 @@ void A_timerinterrupt(void)
     for (i = 0; i < remain; i++)
     {
         int s = (A_base + i) % SEQSPACE;
-        tolayer3(A, buf[s]);
+        tolayer3(A, snd_buf[s]);
         packets_resent++;
         if (i == 0)
             starttimer(A, RTT);
@@ -162,27 +163,30 @@ void B_input(struct pkt p)
         return;
     }
 
-    packets_received++; /* ← Gradescope 统计 */
-    send_ack(p.seqnum); /* 所有正确包都要 ACK */
+    /* 每一个未损坏的数据包都必须 ACK */
+    send_ack(p.seqnum);
 
-    /* 在接收窗口内？ */
+    /* 判断是否需要递交/缓存 */
     {
         int offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
         if (offset >= WINDOWSIZE)
-            return; /* 旧包：只重发 ACK */
+            return; /* 不在窗口，只 ACK */
 
         if (!rcv_mark[p.seqnum])
         {
+            int k;
             rcv_mark[p.seqnum] = true;
-            memcpy(rcv_data[p.seqnum], p.payload, 20);
+            for (k = 0; k < 20; k++)
+                rcv_data[p.seqnum][k] = p.payload[k];
             if (TRACE > 1)
                 printf("----B: buffer %d\n", p.seqnum);
         }
 
-        /* 连续交付并滑窗 */
+        /* 只在真正递交前统计一次“正确接收” */
         while (rcv_mark[B_base])
         {
-            tolayer5(B, rcv_data[B_base]); /* emulator 会计数 deliver */
+            packets_received++;
+            tolayer5(B, rcv_data[B_base]);
             rcv_mark[B_base] = false;
             if (TRACE > 1)
                 printf("----B: deliver %d\n", B_base);
@@ -191,6 +195,6 @@ void B_input(struct pkt p)
     }
 }
 
-/* 双向占位 */
-void B_output(struct msg m) {}
+/* stubs (未使用) */
+void B_output(struct msg message) {}
 void B_timerinterrupt(void) {}

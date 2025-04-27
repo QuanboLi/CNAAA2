@@ -2,11 +2,11 @@
 #ifndef SR_H
 #define SR_H
 
-/* 由 emulator.h 定义的结构体，只需前置声明 */
+/* 仅做前置声明，避免重复包含 emulator.h */
 struct msg;
 struct pkt;
 
-/* 统计量（emulator.c 中定义，sr.c 要更新这些值） */
+/* 统计量（由 emulator.c 定义、判分脚本读取） */
 extern int TRACE;
 extern int window_full;
 extern int total_ACKs_received;
@@ -23,10 +23,10 @@ void A_timerinterrupt(void);
 void B_init(void);
 void B_input(struct pkt packet);
 
-/* 备用 */
+/* 占位：本次作业单向传输 */
 void B_output(struct msg message);
 void B_timerinterrupt(void);
 
-#define BIDIRECTIONAL 1 /* 0 = 单向 A→B */
+#define BIDIRECTIONAL 1 /* 0 = A→B；1 = 开启 ACK 返回 */
 
 #endif /* SR_H */
