@@ -1,17 +1,17 @@
-/* sr.c – final sanity-pass version (C90, -ansi -pedantic clean) */
+/* sr.c – Selective Repeat, C90 clean, Gradescope sanity-pass */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* --- 参数 --- */
+/* ---------- parameters ---------- */
 #define RTT 16.0
 #define WINDOWSIZE 6
 #define SEQSPACE (2 * WINDOWSIZE)
 #define NOTINUSE (-1)
 
-/* --- 校验和 --- */
+/* ---------- checksum helpers ---------- */
 static int ComputeChecksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
@@ -23,7 +23,7 @@ static int ComputeChecksum(struct pkt p)
 static bool IsCorrupted(struct pkt p) { return p.checksum != ComputeChecksum(p); }
 
 /*****************************************************************
- *                           Sender A
+ *                         Sender  A
  *****************************************************************/
 static struct pkt buf[SEQSPACE];
 static bool acked[SEQSPACE];
@@ -48,7 +48,7 @@ void A_output(struct msg m)
         return;
     }
 
-    /* ------ 组包 ------ */
+    /* ---------- build packet ---------- */
     struct pkt p;
     int k;
     p.seqnum = A_next;
@@ -61,11 +61,11 @@ void A_output(struct msg m)
     acked[p.seqnum] = false;
 
     if (TRACE > 1)
-        printf("----A: send seq=%d\n", p.seqnum);
+        printf("----A: send %d\n", p.seqnum);
     tolayer3(A, p);
-
     if (A_base == A_next)
         starttimer(A, RTT);
+
     A_next = (A_next + 1) % SEQSPACE;
 }
 
@@ -78,7 +78,7 @@ void A_input(struct pkt p)
         return;
     }
 
-    total_ACKs_received++; /* <-- Gradescope 统计的变量  */
+    total_ACKs_received++; /* ← Gradescope 统计 */
     new_ACKs++;
 
     /* 窗口内？ */
@@ -87,12 +87,13 @@ void A_input(struct pkt p)
         if (offset < WINDOWSIZE)
         {
             acked[p.acknum] = true;
+
             while (acked[A_base])
-            {
+            { /* 滑窗 */
                 acked[A_base] = false;
                 A_base = (A_base + 1) % SEQSPACE;
                 if (TRACE > 1)
-                    printf("----A: slide base → %d\n", A_base);
+                    printf("----A: slide base→%d\n", A_base);
             }
 
             stoptimer(A);
@@ -124,19 +125,11 @@ void A_timerinterrupt(void)
 }
 
 /*****************************************************************
- *                           Receiver B
+ *                         Receiver  B
  *****************************************************************/
-static char rcv_payload[SEQSPACE][20];
+static char rcv_data[SEQSPACE][20];
 static bool rcv_mark[SEQSPACE];
 static int B_base;
-
-void B_init(void)
-{
-    int k;
-    B_base = 0;
-    for (k = 0; k < SEQSPACE; k++)
-        rcv_mark[k] = false;
-}
 
 static void send_ack(int seq)
 {
@@ -152,6 +145,14 @@ static void send_ack(int seq)
         printf("----B: ACK %d\n", seq);
 }
 
+void B_init(void)
+{
+    int k;
+    B_base = 0;
+    for (k = 0; k < SEQSPACE; k++)
+        rcv_mark[k] = false;
+}
+
 void B_input(struct pkt p)
 {
     if (IsCorrupted(p))
@@ -161,28 +162,27 @@ void B_input(struct pkt p)
         return;
     }
 
-    packets_received++; /* <-- Gradescope 统计的变量 */
+    packets_received++; /* ← Gradescope 统计 */
+    send_ack(p.seqnum); /* 所有正确包都要 ACK */
 
-    send_ack(p.seqnum); /* 所有非损坏包都要 ACK */
-
-    /* 是否在当前窗口? */
+    /* 在接收窗口内？ */
     {
         int offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
         if (offset >= WINDOWSIZE)
-            return; /* 旧窗口，仅重发 ACK */
+            return; /* 旧包：只重发 ACK */
 
         if (!rcv_mark[p.seqnum])
-        { /* 首次收到 */
+        {
             rcv_mark[p.seqnum] = true;
-            memcpy(rcv_payload[p.seqnum], p.payload, 20);
+            memcpy(rcv_data[p.seqnum], p.payload, 20);
             if (TRACE > 1)
                 printf("----B: buffer %d\n", p.seqnum);
         }
 
-        /* 尝试连续交付并滑窗 */
+        /* 连续交付并滑窗 */
         while (rcv_mark[B_base])
         {
-            tolayer5(B, rcv_payload[B_base]); /* emulator 统计 deliver 数 */
+            tolayer5(B, rcv_data[B_base]); /* emulator 会计数 deliver */
             rcv_mark[B_base] = false;
             if (TRACE > 1)
                 printf("----B: deliver %d\n", B_base);
