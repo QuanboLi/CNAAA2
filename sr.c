@@ -13,10 +13,10 @@
 /* ******************************************************************
    Macro definitions
 ****************************************************************** */
-#define RTT 16.0      /* timeout interval                       */
-#define WINDOWSIZE 6  /* sliding window size                    */
-#define SEQSPACE 7    /* sequence-number space (≥ WINDOWSIZE+1) */
-#define NOTINUSE (-1) /* unused header field indicator          */
+#define RTT 16.0      /* timer expiration interval        */
+#define WINDOWSIZE 6  /* sliding window size              */
+#define SEQSPACE 7    /* seq‐number space size            */
+#define NOTINUSE (-1) /* unused header field indicator    */
 
 /* ******************************************************************
    Checksum helpers
@@ -40,10 +40,10 @@ static bool IsCorrupted(struct pkt packet)
 /* ******************************************************************
    Sender (A)
 ****************************************************************** */
-static struct pkt send_buffer[SEQSPACE]; /* buffered but unACKed packets */
-static bool acked[SEQSPACE];             /* acked[i]==true if seq i acknowledged */
-static int A_base;                       /* left edge of sender window         */
-static int A_nextseqnum;                 /* next sequence number to use        */
+static struct pkt send_buffer[SEQSPACE];
+static bool acked[SEQSPACE];
+static int A_base;
+static int A_nextseqnum;
 
 void A_init(void)
 {
@@ -82,7 +82,7 @@ void A_output(struct msg message)
         printf("----A: send seq=%d\n", packet.seqnum);
     tolayer3(A, packet);
 
-    /* first in window? start timer */
+    /* start timer if first in window */
     if (A_base == A_nextseqnum)
         starttimer(A, RTT);
 
@@ -133,7 +133,6 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
     int outstanding, i;
-
     if (TRACE > 0)
         printf("----A: timeout, retransmit window\n");
     stoptimer(A);
@@ -153,9 +152,9 @@ void A_timerinterrupt(void)
 /* ******************************************************************
    Receiver (B)
 ****************************************************************** */
-static char rcv_payload[SEQSPACE][20]; /* buffered out-of-order payloads */
-static bool rcv_received[SEQSPACE];    /* true if payload buffered        */
-static int B_base;                     /* left edge of receiver window    */
+static char rcv_payload[SEQSPACE][20];
+static bool rcv_received[SEQSPACE];
+static int B_base;
 
 void B_init(void)
 {
@@ -176,7 +175,7 @@ void B_input(struct pkt packet)
         offset = (seq - B_base + SEQSPACE) % SEQSPACE;
         if (offset < WINDOWSIZE)
         {
-            /* count valid data packet */
+            /* count valid packet */
             packets_received++;
 
             /* build & send ACK */
@@ -191,7 +190,7 @@ void B_input(struct pkt packet)
                 tolayer3(B, ackpkt);
             }
 
-            /* buffer payload if first time */
+            /* buffer and deliver */
             if (!rcv_received[seq])
             {
                 rcv_received[seq] = true;
@@ -199,8 +198,6 @@ void B_input(struct pkt packet)
                 if (TRACE > 1)
                     printf("----B: buffer seq=%d\n", seq);
             }
-
-            /* deliver in-order */
             while (rcv_received[B_base])
             {
                 if (TRACE > 1)
@@ -212,8 +209,6 @@ void B_input(struct pkt packet)
             return;
         }
     }
-
-    /* corrupted or out-of-window */
     if (TRACE > 0)
         printf("----B: discard packet\n");
 }
