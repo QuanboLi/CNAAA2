@@ -8,15 +8,14 @@
 
 /* ******************************************************************
    Selective Repeat ARQ protocol.  Adapted from J.F.Kurose
-   SELECTIVE REPEAT NETWORK EMULATOR: VERSION 1.0
 ****************************************************************** */
 
 /* ******************************************************************
    Macro definitions
 ****************************************************************** */
-#define RTT 16.0     /* timer expiration interval                    */
-#define WINDOWSIZE 6 /* window size                                   */
-#define SEQSPACE 7   /* sequence‐number space size (≥ WINDOWSIZE+1)  */
+#define RTT 16.0
+#define WINDOWSIZE 6
+#define SEQSPACE 7
 #define NOTINUSE (-1)
 
 /* ******************************************************************
@@ -24,8 +23,7 @@
 ****************************************************************** */
 static int ComputeChecksum(struct pkt packet)
 {
-    int checksum = 0;
-    int i;
+    int checksum = 0, i;
     checksum += packet.seqnum;
     checksum += packet.acknum;
     for (i = 0; i < 20; i++)
@@ -60,34 +58,29 @@ void A_output(struct msg message)
     int outstanding;
     struct pkt packet;
 
-    /* check if window is full */
     outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
     if (outstanding >= WINDOWSIZE)
     {
         window_full++;
         if (TRACE > 0)
-            printf("----A: window full, drop message from layer5\n");
+            printf("----A: window full, drop\n");
         return;
     }
 
-    /* build packet */
     packet.seqnum = A_nextseqnum;
     packet.acknum = NOTINUSE;
     memcpy(packet.payload, message.data, 20);
     packet.checksum = ComputeChecksum(packet);
 
-    /* buffer & send */
     send_buffer[packet.seqnum] = packet;
     acked[packet.seqnum] = false;
     if (TRACE > 1)
-        printf("----A: send packet seq=%d\n", packet.seqnum);
+        printf("----A: send seq=%d\n", packet.seqnum);
     tolayer3(A, packet);
 
-    /* first in window → start timer */
     if (A_base == A_nextseqnum)
         starttimer(A, RTT);
 
-    /* advance next sequence number */
     A_nextseqnum = (A_nextseqnum + 1) % SEQSPACE;
 }
 
@@ -95,25 +88,23 @@ void A_input(struct pkt packet)
 {
     int acknum, offset, still_outstanding;
 
-    /* ignore corrupted ACK */
     if (IsCorrupted(packet))
     {
         if (TRACE > 0)
-            printf("----A: received corrupted ACK, ignore\n");
+            printf("----A: corrupted ACK, ignore\n");
         return;
     }
+
     acknum = packet.acknum;
     if (TRACE > 1)
         printf("----A: ACK %d received\n", acknum);
 
-    /* if within window, count and slide */
     offset = (acknum - A_base + SEQSPACE) % SEQSPACE;
     if (offset < WINDOWSIZE)
     {
-        /* count this ACK */
+        /* 统计 ACK */
         new_ACKs++;
 
-        /* mark and slide window */
         acked[acknum] = true;
         while (acked[A_base])
         {
@@ -123,7 +114,6 @@ void A_input(struct pkt packet)
                 printf("----A: slide base to %d\n", A_base);
         }
 
-        /* restart timer if needed */
         stoptimer(A);
         still_outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
         if (still_outstanding > 0)
@@ -134,9 +124,8 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
     int outstanding, i;
-
     if (TRACE > 0)
-        printf("----A: timeout, retransmit window\n");
+        printf("----A: timeout, retransmit\n");
     stoptimer(A);
 
     outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
@@ -144,7 +133,7 @@ void A_timerinterrupt(void)
     {
         int seq = (A_base + i) % SEQSPACE;
         if (TRACE > 1)
-            printf("----A: retransmit packet seq=%d\n", seq);
+            printf("----A: retransmit seq=%d\n", seq);
         tolayer3(A, send_buffer[seq]);
         if (i == 0)
             starttimer(A, RTT);
@@ -170,17 +159,16 @@ void B_input(struct pkt packet)
 {
     int seq, offset;
 
-    /* if not corrupted and in receive window */
     if (!IsCorrupted(packet))
     {
         seq = packet.seqnum;
         offset = (seq - B_base + SEQSPACE) % SEQSPACE;
         if (offset < WINDOWSIZE)
         {
-            /* count this received packet */
+            /* 统计收到的分组 */
             packets_received++;
 
-            /* build and send ACK */
+            /* 发送 ACK */
             {
                 struct pkt ackpkt;
                 memset(&ackpkt, 0, sizeof ackpkt);
@@ -192,20 +180,18 @@ void B_input(struct pkt packet)
                 tolayer3(B, ackpkt);
             }
 
-            /* buffer payload if first time */
+            /* 缓存并可能交付 */
             if (!rcv_received[seq])
             {
                 rcv_received[seq] = true;
                 memcpy(rcv_payload[seq], packet.payload, 20);
                 if (TRACE > 1)
-                    printf("----B: buffer packet %d\n", seq);
+                    printf("----B: buffer seq=%d\n", seq);
             }
-
-            /* deliver any in‐order packets */
             while (rcv_received[B_base])
             {
                 if (TRACE > 1)
-                    printf("----B: deliver payload for seq=%d\n", B_base);
+                    printf("----B: deliver seq=%d\n", B_base);
                 tolayer5(B, rcv_payload[B_base]);
                 rcv_received[B_base] = false;
                 B_base = (B_base + 1) % SEQSPACE;
@@ -213,12 +199,9 @@ void B_input(struct pkt packet)
             return;
         }
     }
-
-    /* corrupted or out‐of‐window */
     if (TRACE > 0)
-        printf("----B: packet corrupted or out of window, drop\n");
+        printf("----B: corrupt or out-of-window, drop\n");
 }
 
-/* bidirectional extension (unused) */
 void B_output(struct msg message) {}
 void B_timerinterrupt(void) {}
