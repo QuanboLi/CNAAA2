@@ -1,7 +1,10 @@
+/* sr.h */
 #ifndef SR_H
 #define SR_H
 
 /* provided by emulator.h: struct msg, struct pkt, tolayer3, tolayer5, starttimer, stoptimer */
+
+#define BIDIRECTIONAL 0 /* 0 = A->B  1 = A<->B */
 
 extern void A_init(void);
 extern void A_output(struct msg message);
