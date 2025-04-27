@@ -94,7 +94,6 @@ void A_input(struct pkt packet)
             printf("----A: corrupted ACK, ignore\n");
         return;
     }
-
     acknum = packet.acknum;
     if (TRACE > 1)
         printf("----A: ACK %d received\n", acknum);
@@ -102,7 +101,7 @@ void A_input(struct pkt packet)
     offset = (acknum - A_base + SEQSPACE) % SEQSPACE;
     if (offset < WINDOWSIZE)
     {
-        /* 统计 ACK */
+        /* 统计收到的 ACK */
         new_ACKs++;
 
         acked[acknum] = true;
@@ -165,10 +164,10 @@ void B_input(struct pkt packet)
         offset = (seq - B_base + SEQSPACE) % SEQSPACE;
         if (offset < WINDOWSIZE)
         {
-            /* 统计收到的分组 */
+            /* 统计收到的有效数据包 */
             packets_received++;
 
-            /* 发送 ACK */
+            /* send ACK */
             {
                 struct pkt ackpkt;
                 memset(&ackpkt, 0, sizeof ackpkt);
@@ -180,7 +179,6 @@ void B_input(struct pkt packet)
                 tolayer3(B, ackpkt);
             }
 
-            /* 缓存并可能交付 */
             if (!rcv_received[seq])
             {
                 rcv_received[seq] = true;
@@ -188,6 +186,7 @@ void B_input(struct pkt packet)
                 if (TRACE > 1)
                     printf("----B: buffer seq=%d\n", seq);
             }
+
             while (rcv_received[B_base])
             {
                 if (TRACE > 1)
