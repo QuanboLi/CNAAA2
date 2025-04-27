@@ -13,10 +13,10 @@
 /* ******************************************************************
    Macro definitions
 ****************************************************************** */
-#define RTT 16.0
-#define WINDOWSIZE 6
-#define SEQSPACE 7
-#define NOTINUSE (-1)
+#define RTT 16.0      /* timer expiration interval        */
+#define WINDOWSIZE 6  /* sliding window size              */
+#define SEQSPACE 7    /* sequence‐number space size       */
+#define NOTINUSE (-1) /* unused header field indicator    */
 
 /* ******************************************************************
    Checksum helpers
@@ -39,10 +39,10 @@ static bool IsCorrupted(struct pkt packet)
 /* ******************************************************************
    Sender (A)
 ****************************************************************** */
-static struct pkt send_buffer[SEQSPACE];
-static bool acked[SEQSPACE];
-static int A_base;
-static int A_nextseqnum;
+static struct pkt send_buffer[SEQSPACE]; /* buffered sent but unACKed packets */
+static bool acked[SEQSPACE];             /* acked[i]==true if we've ACKed seq i */
+static int A_base;                       /* left edge of sender window         */
+static int A_nextseqnum;                 /* next sequence number to use        */
 
 void A_init(void)
 {
@@ -58,29 +58,34 @@ void A_output(struct msg message)
     int outstanding;
     struct pkt packet;
 
+    /* if window is full, drop */
     outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
     if (outstanding >= WINDOWSIZE)
     {
         window_full++;
         if (TRACE > 0)
-            printf("----A: window full, drop\n");
+            printf("----A: window full, drop message\n");
         return;
     }
 
+    /* build packet */
     packet.seqnum = A_nextseqnum;
     packet.acknum = NOTINUSE;
     memcpy(packet.payload, message.data, 20);
     packet.checksum = ComputeChecksum(packet);
 
+    /* buffer and send */
     send_buffer[packet.seqnum] = packet;
     acked[packet.seqnum] = false;
     if (TRACE > 1)
         printf("----A: send seq=%d\n", packet.seqnum);
     tolayer3(A, packet);
 
+    /* first in window? start timer */
     if (A_base == A_nextseqnum)
         starttimer(A, RTT);
 
+    /* advance seqnum */
     A_nextseqnum = (A_nextseqnum + 1) % SEQSPACE;
 }
 
@@ -88,6 +93,7 @@ void A_input(struct pkt packet)
 {
     int acknum, offset, still_outstanding;
 
+    /* ignore corrupted ACKs */
     if (IsCorrupted(packet))
     {
         if (TRACE > 0)
@@ -98,12 +104,14 @@ void A_input(struct pkt packet)
     if (TRACE > 1)
         printf("----A: ACK %d received\n", acknum);
 
+    /* within window? */
     offset = (acknum - A_base + SEQSPACE) % SEQSPACE;
     if (offset < WINDOWSIZE)
     {
-        /* 统计收到的 ACK */
+        /* count valid ACK */
         new_ACKs++;
 
+        /* mark and slide window */
         acked[acknum] = true;
         while (acked[A_base])
         {
@@ -113,6 +121,7 @@ void A_input(struct pkt packet)
                 printf("----A: slide base to %d\n", A_base);
         }
 
+        /* restart timer if packets still outstanding */
         stoptimer(A);
         still_outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
         if (still_outstanding > 0)
@@ -124,7 +133,7 @@ void A_timerinterrupt(void)
 {
     int outstanding, i;
     if (TRACE > 0)
-        printf("----A: timeout, retransmit\n");
+        printf("----A: timeout, retransmit window\n");
     stoptimer(A);
 
     outstanding = (A_nextseqnum - A_base + SEQSPACE) % SEQSPACE;
@@ -142,9 +151,9 @@ void A_timerinterrupt(void)
 /* ******************************************************************
    Receiver (B)
 ****************************************************************** */
-static char rcv_payload[SEQSPACE][20];
-static bool rcv_received[SEQSPACE];
-static int B_base;
+static char rcv_payload[SEQSPACE][20]; /* stored out-of-order payloads */
+static bool rcv_received[SEQSPACE];    /* true if payload buffered    */
+static int B_base;                     /* lower edge of recv window   */
 
 void B_init(void)
 {
@@ -158,13 +167,14 @@ void B_input(struct pkt packet)
 {
     int seq, offset;
 
+    /* if not corrupted */
     if (!IsCorrupted(packet))
     {
         seq = packet.seqnum;
         offset = (seq - B_base + SEQSPACE) % SEQSPACE;
         if (offset < WINDOWSIZE)
         {
-            /* 统计收到的有效数据包 */
+            /* count valid packet */
             packets_received++;
 
             /* send ACK */
@@ -179,6 +189,7 @@ void B_input(struct pkt packet)
                 tolayer3(B, ackpkt);
             }
 
+            /* buffer payload if first time */
             if (!rcv_received[seq])
             {
                 rcv_received[seq] = true;
@@ -187,6 +198,7 @@ void B_input(struct pkt packet)
                     printf("----B: buffer seq=%d\n", seq);
             }
 
+            /* deliver any in-order packets */
             while (rcv_received[B_base])
             {
                 if (TRACE > 1)
@@ -198,9 +210,12 @@ void B_input(struct pkt packet)
             return;
         }
     }
+
+    /* corrupted or out-of-window */
     if (TRACE > 0)
-        printf("----B: corrupt or out-of-window, drop\n");
+        printf("----B: discard packet\n");
 }
 
+/* bidirectional extensions (unused) */
 void B_output(struct msg message) {}
 void B_timerinterrupt(void) {}
