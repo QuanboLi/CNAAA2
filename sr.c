@@ -1,63 +1,64 @@
-/* sr.c – Selective Repeat, C90-clean, Gradescope sanity-pass */
+/* sr.c – Selective Repeat implementation (C90-clean) */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* ---------- parameters ---------- */
-#define RTT 16.0
+/* -------- constants -------- */
+#define RTT 16.0 /* 题目固定 */
 #define WINDOWSIZE 6
-#define SEQSPACE (2 * WINDOWSIZE) /* 题目要求 ≥ 2·W */
+#define SEQSPACE (2 * WINDOWSIZE) /* ≥2W */
 #define NOTINUSE (-1)
 
-/* ---------- checksum helpers ---------- */
+/* -------- checksum -------- */
 static int ComputeChecksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
-    int k;
-    for (k = 0; k < 20; k++)
-        s += (unsigned char)p.payload[k];
+    int i;
+    for (i = 0; i < 20; i++)
+        s += (unsigned char)p.payload[i];
     return s;
 }
 static bool IsCorrupted(struct pkt p) { return p.checksum != ComputeChecksum(p); }
 
-/*****************************************************************
- *                         Sender  A
- *****************************************************************/
-static struct pkt buf[SEQSPACE];
+/**********************************************************************
+ *                              Sender A
+ *********************************************************************/
+static struct pkt snd_buf[SEQSPACE];
 static bool acked[SEQSPACE];
 static int A_base, A_next;
 
 void A_init(void)
 {
-    int k;
+    int i;
     A_base = A_next = 0;
-    for (k = 0; k < SEQSPACE; k++)
-        acked[k] = false;
+    for (i = 0; i < SEQSPACE; i++)
+        acked[i] = false;
 }
 
-void A_output(struct msg m)
+void A_output(struct msg message)
 {
-    int outstanding = (A_next - A_base + SEQSPACE) % SEQSPACE;
+    struct pkt p; /* — 所有局部先声明 (C90) — */
+    int i, outstanding;
+
+    outstanding = (A_next - A_base + SEQSPACE) % SEQSPACE;
     if (outstanding >= WINDOWSIZE)
-    {
+    { /* window full */
         window_full++;
         if (TRACE)
             printf("----A: window full, drop\n");
         return;
     }
 
-    /* ---------- build packet ---------- */
-    struct pkt p;
-    int k;
+    /* build packet */
     p.seqnum = A_next;
     p.acknum = NOTINUSE;
-    for (k = 0; k < 20; k++)
-        p.payload[k] = m.data[k];
+    for (i = 0; i < 20; i++)
+        p.payload[i] = message.data[i];
     p.checksum = ComputeChecksum(p);
 
-    buf[p.seqnum] = p;
+    snd_buf[p.seqnum] = p;
     acked[p.seqnum] = false;
 
     if (TRACE > 1)
@@ -71,41 +72,38 @@ void A_output(struct msg m)
 
 void A_input(struct pkt p)
 {
+    int offset;
+
     if (IsCorrupted(p))
-    {
+    { /* ignore */
         if (TRACE)
             printf("----A: corrupted ACK, ignore\n");
         return;
     }
+    total_ACKs_received++; /* 评分脚本统计 */
 
-    total_ACKs_received++; /* 由评分脚本统计 */
+    offset = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
+    if (offset >= WINDOWSIZE)
+        return; /* ACK 不在窗口 */
 
-    /* ---------- within window? ---------- */
-    {
-        int offset = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
-        if (offset < WINDOWSIZE)
-        {
-            acked[p.acknum] = true;
+    acked[p.acknum] = true; /* mark */
 
-            while (acked[A_base])
-            { /* slide window */
-                acked[A_base] = false;
-                A_base = (A_base + 1) % SEQSPACE;
-                if (TRACE > 1)
-                    printf("----A: slide base→%d\n", A_base);
-            }
-
-            stoptimer(A);
-            if (A_base != A_next)
-                starttimer(A, RTT);
-        }
+    while (acked[A_base])
+    { /* slide window */
+        acked[A_base] = false;
+        A_base = (A_base + 1) % SEQSPACE;
+        if (TRACE > 1)
+            printf("----A: slide base→%d\n", A_base);
     }
+
+    stoptimer(A);
+    if (A_base != A_next)
+        starttimer(A, RTT);
 }
 
 void A_timerinterrupt(void)
 {
-    int remain = (A_next - A_base + SEQSPACE) % SEQSPACE;
-    int i;
+    int i, remain = (A_next - A_base + SEQSPACE) % SEQSPACE;
 
     if (TRACE)
         printf("----A: timeout, resend window\n");
@@ -114,18 +112,18 @@ void A_timerinterrupt(void)
     for (i = 0; i < remain; i++)
     {
         int s = (A_base + i) % SEQSPACE;
-        tolayer3(A, buf[s]);
+        tolayer3(A, snd_buf[s]);
         packets_resent++;
-        if (i == 0)
-            starttimer(A, RTT);
         if (TRACE > 1)
             printf("----A: retransmit %d\n", s);
+        if (i == 0)
+            starttimer(A, RTT);
     }
 }
 
-/*****************************************************************
- *                         Receiver  B
- *****************************************************************/
+/**********************************************************************
+ *                              Receiver B
+ *********************************************************************/
 static char rcv_data[SEQSPACE][20];
 static bool rcv_mark[SEQSPACE];
 static int B_base;
@@ -133,11 +131,11 @@ static int B_base;
 static void send_ack(int seq)
 {
     struct pkt a;
-    int k;
+    int i;
     a.seqnum = NOTINUSE;
     a.acknum = seq;
-    for (k = 0; k < 20; k++)
-        a.payload[k] = 0;
+    for (i = 0; i < 20; i++)
+        a.payload[i] = 0;
     a.checksum = ComputeChecksum(a);
     tolayer3(B, a);
     if (TRACE > 1)
@@ -146,50 +144,47 @@ static void send_ack(int seq)
 
 void B_init(void)
 {
-    int k;
+    int i;
     B_base = 0;
-    for (k = 0; k < SEQSPACE; k++)
-        rcv_mark[k] = false;
+    for (i = 0; i < SEQSPACE; i++)
+        rcv_mark[i] = false;
 }
 
 void B_input(struct pkt p)
 {
+    int offset;
+
     if (IsCorrupted(p))
     {
         if (TRACE)
             printf("----B: corrupt, discard\n");
         return;
     }
+    send_ack(p.seqnum); /* always ACK */
 
-    packets_received++; /* 由评分脚本统计 */
-    send_ack(p.seqnum); /* 所有正确包都必须 ACK */
+    offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
+    if (offset >= WINDOWSIZE)
+        return; /* old packet */
 
-    /* ---------- inside receive window? ---------- */
+    if (!rcv_mark[p.seqnum])
     {
-        int offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
-        if (offset >= WINDOWSIZE)
-            return; /* 旧包，只重发 ACK */
+        rcv_mark[p.seqnum] = true;
+        memcpy(rcv_data[p.seqnum], p.payload, 20);
+        if (TRACE > 1)
+            printf("----B: buffer %d\n", p.seqnum);
+    }
 
-        if (!rcv_mark[p.seqnum])
-        {
-            rcv_mark[p.seqnum] = true;
-            memcpy(rcv_data[p.seqnum], p.payload, 20);
-            if (TRACE > 1)
-                printf("----B: buffer %d\n", p.seqnum);
-        }
-
-        /* deliver in-order & slide window */
-        while (rcv_mark[B_base])
-        {
-            tolayer5(B, rcv_data[B_base]); /* emulator 负责计数 */
-            rcv_mark[B_base] = false;
-            if (TRACE > 1)
-                printf("----B: deliver %d\n", B_base);
-            B_base = (B_base + 1) % SEQSPACE;
-        }
+    /* deliver in-order & slide */
+    while (rcv_mark[B_base])
+    {
+        tolayer5(B, rcv_data[B_base]);
+        rcv_mark[B_base] = false;
+        if (TRACE > 1)
+            printf("----B: deliver %d\n", B_base);
+        B_base = (B_base + 1) % SEQSPACE;
     }
 }
 
-/* 双向占位 */
+/* unused stubs */
 void B_output(struct msg m) {}
 void B_timerinterrupt(void) {}
