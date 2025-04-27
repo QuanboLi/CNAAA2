@@ -95,7 +95,7 @@ void A_output(struct msg message)
 
 void A_input(struct pkt packet)
 {
-    int acknum, offset, still_outstanding, i;
+    int acknum, offset, still_outstanding;
 
     /* only process non-corrupted ACKs */
     if (IsCorrupted(packet))
@@ -131,6 +131,7 @@ void A_timerinterrupt(void)
 {
     int outstanding, i;
 
+    /* timeout: retransmit all unACKed packets in window */
     if (TRACE > 0)
         printf("----A: timeout, retransmit window\n");
     stoptimer(A);
@@ -174,12 +175,13 @@ void B_input(struct pkt packet)
         if (offset < WINDOWSIZE)
         {
             struct pkt ackpkt;
-            int i;
 
+            /* initialize ACK packet */
+            memset(&ackpkt, 0, sizeof ackpkt);
             ackpkt.seqnum = NOTINUSE;
             ackpkt.acknum = seq;
-            memset(ackpkt.payload, 0, sizeof(ackpkt.payload));
             ackpkt.checksum = ComputeChecksum(ackpkt);
+
             if (TRACE > 1)
                 printf("----B: send ACK %d\n", seq);
             tolayer3(B, ackpkt);

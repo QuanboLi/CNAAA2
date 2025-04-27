@@ -4,7 +4,7 @@
 
 /* provided by emulator.h: struct msg, struct pkt, tolayer3, tolayer5, starttimer, stoptimer */
 
-#define BIDIRECTIONAL 0 /* 0 = A->B  1 = A<->B */
+#define BIDIRECTIONAL 1 /* 0 = A->B  1 = A<->B */
 
 extern void A_init(void);
 extern void A_output(struct msg message);
