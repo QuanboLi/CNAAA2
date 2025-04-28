@@ -1,17 +1,17 @@
-/* sr.c – Selective Repeat implementation (C90-clean) */
+/* sr.c – Selective Repeat, single-timer version (C90-clean) */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* -------- constants -------- */
-#define RTT 16.0 /* 题目固定 */
+/* ---------- 协议参数 ---------- */
+#define RTT 16.0 /* timeout interval (题目固定)   */
 #define WINDOWSIZE 6
-#define SEQSPACE (2 * WINDOWSIZE) /* ≥2W */
+#define SEQSPACE (2 * WINDOWSIZE) /* ≥ 2W                        */
 #define NOTINUSE (-1)
 
-/* -------- checksum -------- */
+/* ---------- 校验和 ---------- */
 static int ComputeChecksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
@@ -39,12 +39,12 @@ void A_init(void)
 
 void A_output(struct msg message)
 {
-    struct pkt p; /* — 所有局部先声明 (C90) — */
+    struct pkt p;
     int i, outstanding;
 
     outstanding = (A_next - A_base + SEQSPACE) % SEQSPACE;
     if (outstanding >= WINDOWSIZE)
-    { /* window full */
+    {
         window_full++;
         if (TRACE)
             printf("----A: window full, drop\n");
@@ -75,18 +75,19 @@ void A_input(struct pkt p)
     int offset;
 
     if (IsCorrupted(p))
-    { /* ignore */
+    {
         if (TRACE)
             printf("----A: corrupted ACK, ignore\n");
         return;
     }
-    total_ACKs_received++; /* 评分脚本统计 */
+    total_ACKs_received++;
+    new_ACKs++; /* 统计有效 ACK */
 
     offset = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
     if (offset >= WINDOWSIZE)
         return; /* ACK 不在窗口 */
 
-    acked[p.acknum] = true; /* mark */
+    acked[p.acknum] = true;
 
     while (acked[A_base])
     { /* slide window */
@@ -103,22 +104,14 @@ void A_input(struct pkt p)
 
 void A_timerinterrupt(void)
 {
-    int i, remain = (A_next - A_base + SEQSPACE) % SEQSPACE;
-
+    /* 只有一只 timer：重发“最早未确认”的那个分组 */
     if (TRACE)
-        printf("----A: timeout, resend window\n");
-    stoptimer(A);
+        printf("----A: timeout, resend %d\n", A_base);
 
-    for (i = 0; i < remain; i++)
-    {
-        int s = (A_base + i) % SEQSPACE;
-        tolayer3(A, snd_buf[s]);
-        packets_resent++;
-        if (TRACE > 1)
-            printf("----A: retransmit %d\n", s);
-        if (i == 0)
-            starttimer(A, RTT);
-    }
+    stoptimer(A);
+    tolayer3(A, snd_buf[A_base]);
+    packets_resent++;
+    starttimer(A, RTT);
 }
 
 /**********************************************************************
@@ -160,11 +153,15 @@ void B_input(struct pkt p)
             printf("----B: corrupt, discard\n");
         return;
     }
-    send_ack(p.seqnum); /* always ACK */
+
+    /* 该包不会被忽略 → 计数 */
+    packets_received++;
+
+    send_ack(p.seqnum); /* 任意正确包都要 ACK */
 
     offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
     if (offset >= WINDOWSIZE)
-        return; /* old packet */
+        return; /* 旧包：仅重发 ACK */
 
     if (!rcv_mark[p.seqnum])
     {
@@ -174,7 +171,7 @@ void B_input(struct pkt p)
             printf("----B: buffer %d\n", p.seqnum);
     }
 
-    /* deliver in-order & slide */
+    /* deliver in-order & slide window */
     while (rcv_mark[B_base])
     {
         tolayer5(B, rcv_data[B_base]);
@@ -185,6 +182,6 @@ void B_input(struct pkt p)
     }
 }
 
-/* unused stubs */
+/* 占位（本作业单向） */
 void B_output(struct msg m) {}
 void B_timerinterrupt(void) {}
