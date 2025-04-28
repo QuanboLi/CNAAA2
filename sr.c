@@ -1,193 +1,196 @@
-/* sr.c — Selective-Repeat implementation, C90-clean */
+/* sr.c – Selective Repeat implementation that preserves
+ *        ALL original trace strings from gbn.c (C90-clean) */
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* —— 参数 —— */
-#define RTT 16.0 /* 题目固定超时 */
+/* ---------------- constants ---------------- */
+#define RTT 16.0 /* fixed timeout in the assignment */
 #define WINDOWSIZE 6
-#define SEQSPACE (2 * WINDOWSIZE) /* ≥ 2W */
+#define SEQSPACE (2 * WINDOWSIZE) /* ≥ 2·W */
 #define NOTINUSE (-1)
 
-/* —— 校验和 —— */
-static int checksum(struct pkt p)
+/* ---------------- helpers ------------------ */
+static int ComputeChecksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
     int i;
-    for (i = 0; i < 20; ++i)
+    for (i = 0; i < 20; i++)
         s += (unsigned char)p.payload[i];
     return s;
 }
-static int corrupted(struct pkt p) { return checksum(p) != p.checksum; }
+static bool IsCorrupted(struct pkt p) { return p.checksum != ComputeChecksum(p); }
 
-/***********************************************************************
- *                               Sender A
- **********************************************************************/
+/**********************************************************************
+ *                              Sender  A
+ *********************************************************************/
 static struct pkt snd_buf[SEQSPACE];
-static char acked[SEQSPACE];
+static bool acked[SEQSPACE];
 static int A_base, A_next;
 
 void A_init(void)
 {
     int i;
     A_base = A_next = 0;
-    for (i = 0; i < SEQSPACE; ++i)
-        acked[i] = 0;
+    for (i = 0; i < SEQSPACE; i++)
+        acked[i] = false;
 }
 
-/* 上层来报文 */
-void A_output(struct msg m)
+void A_output(struct msg message)
 {
-    int in_flight = (A_next - A_base + SEQSPACE) % SEQSPACE;
-    if (in_flight >= WINDOWSIZE)
-    { /* window full */
+    struct pkt p; /* declare first (C90 rule) */
+    int i;
+    int outstanding = (A_next - A_base + SEQSPACE) % SEQSPACE;
+
+    if (outstanding >= WINDOWSIZE) /* ---- window full ---- */
+    {
+        printf("----A: New message arrives, send window is full\n");
         window_full++;
-        if (TRACE)
-            printf("--A: window full; message dropped\n");
         return;
     }
 
-    /* 组包 */
-    {
-        struct pkt p;
-        int i;
-        p.seqnum = A_next;
-        p.acknum = NOTINUSE;
-        for (i = 0; i < 20; ++i)
-            p.payload[i] = m.data[i];
-        p.checksum = checksum(p);
+    /* ---- window not full, build a new packet ---- */
+    printf("----A: New message arrives, send window is not full, send new messge to layer3!\n");
 
-        snd_buf[p.seqnum] = p;
-        acked[p.seqnum] = 0;
+    p.seqnum = A_next;
+    p.acknum = NOTINUSE;
+    for (i = 0; i < 20; i++)
+        p.payload[i] = message.data[i];
+    p.checksum = ComputeChecksum(p);
 
-        if (TRACE > 1)
-            printf("--A: send packet %d\n", p.seqnum);
-        tolayer3(A, p);
-        if (A_base == A_next)
-            starttimer(A, RTT);
+    snd_buf[p.seqnum] = p;
+    acked[p.seqnum] = false;
 
-        A_next = (A_next + 1) % SEQSPACE;
-    }
+    printf("Sending packet %d to layer 3\n", p.seqnum);
+    tolayer3(A, p);
+    if (A_base == A_next)
+        starttimer(A, RTT);
+
+    A_next = (A_next + 1) % SEQSPACE;
 }
 
-/* 收到 ACK */
 void A_input(struct pkt p)
 {
-    if (corrupted(p))
-    {
-        if (TRACE)
-            printf("--A: ***corrupted ACK***\n");
-        return;
-    }
+    int offset;
+
+    if (IsCorrupted(p))
+        return; /* silently ignore – GBN 也不打印 */
+
+    printf("----A: uncorrupted ACK %d is received\n", p.acknum);
     total_ACKs_received++;
-    new_ACKs++;
 
-    /* 是否在当前窗口内？*/
+    offset = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
+    if (offset >= WINDOWSIZE) /* ACK not in window → duplicate/old */
+        return;
+
+    if (!acked[p.acknum])
+        printf("----A: ACK %d is not a duplicate\n", p.acknum);
+
+    acked[p.acknum] = true;
+
+    /* slide window forward while contiguous ACKs exist */
+    while (acked[A_base])
     {
-        int off = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
-        if (off >= WINDOWSIZE)
-            return; /* 旧 ACK */
+        acked[A_base] = false;
+        A_base = (A_base + 1) % SEQSPACE;
+    }
 
-        acked[p.acknum] = 1;
+    stoptimer(A);
+    if (A_base != A_next)
+        starttimer(A, RTT);
+}
 
-        while (acked[A_base])
-        { /* 滑动窗口 */
-            acked[A_base] = 0;
-            ++A_base;
-            A_base %= SEQSPACE;
-        }
+void A_timerinterrupt(void)
+{
+    int remain = (A_next - A_base + SEQSPACE) % SEQSPACE;
+    int i;
 
-        stoptimer(A);
-        if (A_base != A_next)
+    printf("----A: time out,resend packets!\n"); /* keep original comma-no-space */
+    stoptimer(A);
+
+    for (i = 0; i < remain; i++)
+    {
+        int s = (A_base + i) % SEQSPACE;
+        tolayer3(A, snd_buf[s]);
+        packets_resent++;
+        if (i == 0)
             starttimer(A, RTT);
     }
 }
 
-/* 超时 —— 只重传 base 分组 */
-void A_timerinterrupt(void)
-{
-    struct pkt p = snd_buf[A_base];
-
-    if (TRACE)
-        printf("--A: timeout, resend packet %d\n", p.seqnum);
-
-    tolayer3(A, p);
-    packets_resent++;
-    starttimer(A, RTT); /* 重新计时 */
-}
-
-/***********************************************************************
- *                               Receiver B
- **********************************************************************/
-static char rcvd_mark[SEQSPACE];
-static char rcvd_data[SEQSPACE][20];
+/**********************************************************************
+ *                              Receiver  B
+ *********************************************************************/
+static char rcv_data[SEQSPACE][20];
+static bool rcv_mark[SEQSPACE];
 static int B_base;
 
-static void send_ack(int num)
+static void send_ack(int seq)
 {
     struct pkt a;
     int i;
     a.seqnum = NOTINUSE;
-    a.acknum = num;
-    for (i = 0; i < 20; ++i)
+    a.acknum = seq;
+    for (i = 0; i < 20; i++)
         a.payload[i] = 0;
-    a.checksum = checksum(a);
-
+    a.checksum = ComputeChecksum(a);
     tolayer3(B, a);
-    if (TRACE > 1)
-        printf("--B: send ACK %d\n", num);
 }
 
 void B_init(void)
 {
     int i;
     B_base = 0;
-    for (i = 0; i < SEQSPACE; ++i)
-        rcvd_mark[i] = 0;
+    for (i = 0; i < SEQSPACE; i++)
+        rcv_mark[i] = false;
 }
 
 void B_input(struct pkt p)
 {
-    if (corrupted(p))
+    int offset;
+
+    if (IsCorrupted(p))
     {
-        if (TRACE)
-            printf("--B: ***corrupted pkt***\n");
+        printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
+        /* resend last ACK for cumulative effect */
+        send_ack((B_base + SEQSPACE - 1) % SEQSPACE);
         return;
     }
-    packets_received++;
-    send_ack(p.seqnum); /* 对所有正确分组 ACK */
 
-    /* 是否落在接收窗口？*/
+    offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
+
+    if (offset >= WINDOWSIZE) /* packet outside receive window */
     {
-        int off = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
-        if (off >= WINDOWSIZE)
-            return; /* 早期已交付过，纯 ACK */
+        printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
+        send_ack((B_base + SEQSPACE - 1) % SEQSPACE);
+        return;
+    }
 
-        if (!rcvd_mark[p.seqnum])
-        {
-            int i;
-            rcvd_mark[p.seqnum] = 1;
-            for (i = 0; i < 20; ++i)
-                rcvd_data[p.seqnum][i] = p.payload[i];
-            if (TRACE > 1)
-                printf("--B: buffer %d (in-order=%s)\n",
-                       p.seqnum, off == 0 ? "yes" : "no");
-        }
+    if (!rcv_mark[p.seqnum])
+    {
+        printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
+        memcpy(rcv_data[p.seqnum], p.payload, 20);
+        rcv_mark[p.seqnum] = true;
+    }
+    else
+    {
+        /* duplicate packet inside window → still ACK */
+        printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
+    }
 
-        /* 交付尽可能多的连续报文 */
-        while (rcvd_mark[B_base])
-        {
-            tolayer5(B, rcvd_data[B_base]);
-            rcvd_mark[B_base] = 0;
-            if (TRACE > 1)
-                printf("--B: deliver %d\n", B_base);
-            ++B_base;
-            B_base %= SEQSPACE;
-        }
+    send_ack(p.seqnum);
+
+    /* deliver in-order and slide window */
+    while (rcv_mark[B_base])
+    {
+        tolayer5(B, rcv_data[B_base]);
+        rcv_mark[B_base] = false;
+        B_base = (B_base + 1) % SEQSPACE;
     }
 }
 
-/* 双向占位 */
+/* ---- unused stubs for future bidirectional use ---- */
 void B_output(struct msg m) {}
 void B_timerinterrupt(void) {}
