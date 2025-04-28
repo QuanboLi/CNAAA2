@@ -12,6 +12,14 @@
 #define SEQSPACE (2 * WINDOWSIZE) /* ≥ 2·W */
 #define NOTINUSE (-1)
 
+/* ---------------- extern statistics (for trace) ------------- */
+extern int window_full;
+extern int packets_resent;
+/* ★ 新增：与 gbn.c 完全一致的两个计数器 */
+extern int new_ACKs;
+extern int packets_received;
+extern int total_ACKs_received;
+
 /* ---------------- helpers ------------------ */
 static int ComputeChecksum(struct pkt p)
 {
@@ -76,7 +84,7 @@ void A_input(struct pkt p)
     int offset;
 
     if (IsCorrupted(p))
-        return; /* silently ignore – GBN 也不打印 */
+        return; /* silently ignore – same as GBN */
 
     printf("----A: uncorrupted ACK %d is received\n", p.acknum);
     total_ACKs_received++;
@@ -85,8 +93,16 @@ void A_input(struct pkt p)
     if (offset >= WINDOWSIZE) /* ACK not in window → duplicate/old */
         return;
 
+    /* ★ 计数 new_ACKs，并输出是否 duplicate */
     if (!acked[p.acknum])
+    {
+        new_ACKs++;
         printf("----A: ACK %d is not a duplicate\n", p.acknum);
+    }
+    else
+    {
+        printf("----A: ACK %d is a duplicate, ignored\n", p.acknum);
+    }
 
     acked[p.acknum] = true;
 
@@ -154,13 +170,11 @@ void B_input(struct pkt p)
     if (IsCorrupted(p))
     {
         printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-        /* resend last ACK for cumulative effect */
         send_ack((B_base + SEQSPACE - 1) % SEQSPACE);
         return;
     }
 
     offset = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
-
     if (offset >= WINDOWSIZE) /* packet outside receive window */
     {
         printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
@@ -168,16 +182,13 @@ void B_input(struct pkt p)
         return;
     }
 
+    printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
+
     if (!rcv_mark[p.seqnum])
-    {
-        printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
-        memcpy(rcv_data[p.seqnum], p.payload, 20);
+    { /* ★ 第一次到达，统计计数 */
+        packets_received++;
         rcv_mark[p.seqnum] = true;
-    }
-    else
-    {
-        /* duplicate packet inside window → still ACK */
-        printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
+        memcpy(rcv_data[p.seqnum], p.payload, 20);
     }
 
     send_ack(p.seqnum);
