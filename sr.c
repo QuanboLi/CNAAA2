@@ -1,4 +1,4 @@
-/* sr.c – Selective-Repeat implementation with timeout-safety (ANSI-C90)  */
+/* sr.c – Selective Repeat implementation with timeout-safety (ANSI-C90) */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -6,7 +6,7 @@
 #include "sr.h"
 
 /* ---------------- constants ---------------- */
-#define RTT 16.0 /* fixed timeout in the assignment      */
+#define RTT 16.0 /* fixed timeout given by assignment   */
 #define WINDOWSIZE 6
 #define SEQSPACE (2 * WINDOWSIZE) /* sequence-number space ≥ 2·WINDOWSIZE */
 #define NOTINUSE (-1)
@@ -41,21 +41,18 @@ void A_init(void)
 /* -------------------------------------------------------------- */
 void A_output(struct msg message)
 {
-    /* window-full check */
-    if (((A_next - A_base + SEQSPACE) % SEQSPACE) >= WINDOWSIZE)
+    if (((A_next - A_base + SEQSPACE) % SEQSPACE) >= WINDOWSIZE) /* window full */
     {
         printf("----A: New message arrives, send window is full\n");
         window_full++;
         return;
     }
 
-    /* window not full → build and send a packet */
     printf("----A: New message arrives, send window is not full, send new messge to layer3!\n");
 
     {
         struct pkt p;
         int i;
-
         p.seqnum = A_next;
         p.acknum = NOTINUSE;
         for (i = 0; i < 20; ++i)
@@ -69,8 +66,7 @@ void A_output(struct msg message)
         tolayer3(A, p);
     }
 
-    /* start timer when window moves from empty to non-empty */
-    if (A_base == A_next)
+    if (A_base == A_next) /* start timer only when window was empty */
         starttimer(A, RTT);
 
     A_next = (A_next + 1) % SEQSPACE;
@@ -80,32 +76,34 @@ void A_output(struct msg message)
 void A_input(struct pkt p)
 {
     if (IsCorrupted(p))
-        return; /* ignore corrupted ACK */
+        return; /* silently ignore corrupted ACK */
 
     printf("----A: uncorrupted ACK %d is received\n", p.acknum);
     total_ACKs_received++;
 
-    /* ACK outside current window → duplicate/old */
+    /* ACK outside current window → duplicate / old */
     if (((p.acknum - A_base + SEQSPACE) % SEQSPACE) >= WINDOWSIZE)
         return;
 
     if (!acked[p.acknum])
+    {
         printf("----A: ACK %d is not a duplicate\n", p.acknum);
+        new_ACKs++; /* *** count first-time ACK *** */
+    }
     else
         printf("----A: ACK %d is a duplicate\n", p.acknum);
 
     acked[p.acknum] = true;
 
-    /* slide window as far as contiguous ACKs allow */
+    /* slide send window forward while contiguous ACKs exist */
     while (acked[A_base])
     {
         acked[A_base] = false;
         A_base = (A_base + 1) % SEQSPACE;
     }
 
-    /* restart timer only if outstanding packets remain */
     stoptimer(A);
-    if (A_base != A_next)
+    if (A_base != A_next) /* outstanding pkts remain → restart timer */
         starttimer(A, RTT);
 }
 
@@ -125,8 +123,7 @@ void A_timerinterrupt(void)
         packets_resent++;
     }
 
-    /* window non-empty → restart timer */
-    if (remain > 0)
+    if (remain > 0) /* restart timer only if we really resent */
         starttimer(A, RTT);
 }
 
@@ -179,9 +176,10 @@ void B_input(struct pkt p)
     }
 
     printf("----B: packet %d is correctly received, send ACK!\n", p.seqnum);
+    packets_received++; /* *** count every valid in-window packet *** */
     send_ack(p.seqnum);
 
-    /* buffer if not seen before */
+    /* buffer if first arrival */
     if (!rcv_mark[p.seqnum])
     {
         memcpy(rcv_data[p.seqnum], p.payload, 20);
