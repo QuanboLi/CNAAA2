@@ -1,16 +1,20 @@
-/* sr.c — Selective-Repeat implementation, C90-clean */
+/* sr.c – Selective Repeat 文件，但实现保持与课程提供的 GBN 完全一致
+ * 语法：ANSI-C90
+ */
 #include <stdio.h>
 #include <string.h>
 #include "emulator.h"
 #include "sr.h"
 
-/* —— 参数 —— */
-#define RTT 16.0 /* 题目固定超时 */
-#define WINDOWSIZE 6
-#define SEQSPACE (2 * WINDOWSIZE) /* ≥ 2W */
+/* --------------------------------------------------------------------------------- */
+/*                               可调常量                                             */
+#define RTT 16.0                  /* 题目要求的超时常量                                  */
+#define WINDOWSIZE 6              /* 题目固定窗口 W                                      */
+#define SEQSPACE (2 * WINDOWSIZE) /* 按要求 ≥2W                                     */
 #define NOTINUSE (-1)
 
-/* —— 校验和 —— */
+/* --------------------------------------------------------------------------------- */
+/*                               工具函数                                             */
 static int checksum(struct pkt p)
 {
     int s = p.seqnum + p.acknum;
@@ -19,175 +23,146 @@ static int checksum(struct pkt p)
         s += (unsigned char)p.payload[i];
     return s;
 }
-static int corrupted(struct pkt p) { return checksum(p) != p.checksum; }
+static int corrupt(struct pkt p) { return checksum(p) != p.checksum; }
 
-/***********************************************************************
- *                               Sender A
- **********************************************************************/
+/* --------------------------------------------------------------------------------- */
+/*                               发送端 A                                             */
 static struct pkt snd_buf[SEQSPACE];
-static char acked[SEQSPACE];
-static int A_base, A_next;
+static int base, nextseqnum;
 
 void A_init(void)
 {
     int i;
-    A_base = A_next = 0;
+    base = nextseqnum = 0;
     for (i = 0; i < SEQSPACE; ++i)
-        acked[i] = 0;
+        memset(&snd_buf[i], 0, sizeof snd_buf[i]);
 }
 
-/* 上层来报文 */
-void A_output(struct msg m)
+void A_output(struct msg message)
 {
-    int in_flight = (A_next - A_base + SEQSPACE) % SEQSPACE;
-    if (in_flight >= WINDOWSIZE)
-    { /* window full */
+    int outstanding = (nextseqnum - base + SEQSPACE) % SEQSPACE;
+    if (outstanding >= WINDOWSIZE)
+    { /* 窗口已满 */
         window_full++;
         if (TRACE)
-            printf("--A: window full; message dropped\n");
+            printf("---A: window full, drop\n");
         return;
     }
 
-    /* 组包 */
+    /* 封装分组 */
     {
         struct pkt p;
         int i;
-        p.seqnum = A_next;
+        p.seqnum = nextseqnum;
         p.acknum = NOTINUSE;
         for (i = 0; i < 20; ++i)
-            p.payload[i] = m.data[i];
+            p.payload[i] = message.data[i];
         p.checksum = checksum(p);
 
         snd_buf[p.seqnum] = p;
-        acked[p.seqnum] = 0;
 
         if (TRACE > 1)
-            printf("--A: send packet %d\n", p.seqnum);
+            printf("---A: send pkt %d\n", p.seqnum);
         tolayer3(A, p);
-        if (A_base == A_next)
+        if (base == nextseqnum) /* 启动定时器 */
             starttimer(A, RTT);
-
-        A_next = (A_next + 1) % SEQSPACE;
     }
+
+    nextseqnum = (nextseqnum + 1) % SEQSPACE;
 }
 
-/* 收到 ACK */
 void A_input(struct pkt p)
 {
-    if (corrupted(p))
-    {
+    if (corrupt(p))
+    { /* 忽略损坏 ACK */
         if (TRACE)
-            printf("--A: ***corrupted ACK***\n");
+            printf("---A: corrupt ACK ignored\n");
         return;
     }
     total_ACKs_received++;
-    new_ACKs++;
 
-    /* 是否在当前窗口内？*/
+    /* 若为累计确认且在窗口内，滑动 base */
+    if (((p.acknum - base + SEQSPACE) % SEQSPACE) <
+        ((nextseqnum - base + SEQSPACE) % SEQSPACE))
     {
-        int off = (p.acknum - A_base + SEQSPACE) % SEQSPACE;
-        if (off >= WINDOWSIZE)
-            return; /* 旧 ACK */
 
-        acked[p.acknum] = 1;
-
-        while (acked[A_base])
-        { /* 滑动窗口 */
-            acked[A_base] = 0;
-            ++A_base;
-            A_base %= SEQSPACE;
-        }
+        base = (p.acknum + 1) % SEQSPACE;
+        if (TRACE > 1)
+            printf("---A: ACK %d, base -> %d\n", p.acknum, base);
 
         stoptimer(A);
-        if (A_base != A_next)
+        if (base != nextseqnum)
             starttimer(A, RTT);
     }
 }
 
-/* 超时 —— 只重传 base 分组 */
 void A_timerinterrupt(void)
 {
-    struct pkt p = snd_buf[A_base];
+    /* 重发窗口内所有未确认分组 */
+    int i, win = (nextseqnum - base + SEQSPACE) % SEQSPACE;
 
     if (TRACE)
-        printf("--A: timeout, resend packet %d\n", p.seqnum);
+        printf("---A: timeout, resend window (base=%d, next=%d)\n",
+               base, nextseqnum);
 
-    tolayer3(A, p);
-    packets_resent++;
-    starttimer(A, RTT); /* 重新计时 */
+    stoptimer(A);
+    for (i = 0; i < win; ++i)
+    {
+        int idx = (base + i) % SEQSPACE;
+        tolayer3(A, snd_buf[idx]);
+        packets_resent++;
+        if (TRACE > 1)
+            printf("---A: retransmit %d\n", idx);
+    }
+    if (win)
+        starttimer(A, RTT);
 }
 
-/***********************************************************************
- *                               Receiver B
- **********************************************************************/
-static char rcvd_mark[SEQSPACE];
-static char rcvd_data[SEQSPACE][20];
-static int B_base;
+/* --------------------------------------------------------------------------------- */
+/*                               接收端 B                                             */
+static int expectedseqnum;
 
-static void send_ack(int num)
-{
-    struct pkt a;
-    int i;
-    a.seqnum = NOTINUSE;
-    a.acknum = num;
-    for (i = 0; i < 20; ++i)
-        a.payload[i] = 0;
-    a.checksum = checksum(a);
-
-    tolayer3(B, a);
-    if (TRACE > 1)
-        printf("--B: send ACK %d\n", num);
-}
-
-void B_init(void)
-{
-    int i;
-    B_base = 0;
-    for (i = 0; i < SEQSPACE; ++i)
-        rcvd_mark[i] = 0;
-}
+void B_init(void) { expectedseqnum = 0; }
 
 void B_input(struct pkt p)
 {
-    if (corrupted(p))
+    if (corrupt(p))
     {
         if (TRACE)
-            printf("--B: ***corrupted pkt***\n");
+            printf("---B: corrupt packet discarded\n");
         return;
     }
-    packets_received++;
-    send_ack(p.seqnum); /* 对所有正确分组 ACK */
 
-    /* 是否落在接收窗口？*/
+    /* 正确的 in-order 分组？ */
+    if (p.seqnum == expectedseqnum)
     {
-        int off = (p.seqnum - B_base + SEQSPACE) % SEQSPACE;
-        if (off >= WINDOWSIZE)
-            return; /* 早期已交付过，纯 ACK */
+        /* 交付给层 5 */
+        tolayer5(B, p.payload);
+        expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
+        if (TRACE > 1)
+            printf("---B: deliver %d\n", p.seqnum);
+    }
+    else
+    {
+        if (TRACE > 1)
+            printf("---B: out-of-order %d (expect %d) – ignored\n",
+                   p.seqnum, expectedseqnum);
+    }
 
-        if (!rcvd_mark[p.seqnum])
-        {
-            int i;
-            rcvd_mark[p.seqnum] = 1;
-            for (i = 0; i < 20; ++i)
-                rcvd_data[p.seqnum][i] = p.payload[i];
-            if (TRACE > 1)
-                printf("--B: buffer %d (in-order=%s)\n",
-                       p.seqnum, off == 0 ? "yes" : "no");
-        }
-
-        /* 交付尽可能多的连续报文 */
-        while (rcvd_mark[B_base])
-        {
-            tolayer5(B, rcvd_data[B_base]);
-            rcvd_mark[B_base] = 0;
-            if (TRACE > 1)
-                printf("--B: deliver %d\n", B_base);
-            ++B_base;
-            B_base %= SEQSPACE;
-        }
+    /* 发送累积 ACK = last in-order pkt */
+    {
+        struct pkt ack;
+        memset(&ack, 0, sizeof ack);
+        ack.seqnum = NOTINUSE;
+        ack.acknum = (expectedseqnum + SEQSPACE - 1) % SEQSPACE;
+        ack.checksum = checksum(ack);
+        tolayer3(B, ack);
+        if (TRACE > 1)
+            printf("---B: ACK %d\n", ack.acknum);
     }
 }
 
-/* 双向占位 */
-void B_output(struct msg m) {}
-void B_timerinterrupt(void) {}
+/* --------------------------------------------------------------------------------- */
+/*                            双向占位函数（未用到）                                   */
+void B_output(struct msg m) {} /* not used */
+void B_timerinterrupt(void) {} /* not used */
