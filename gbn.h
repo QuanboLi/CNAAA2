@@ -1,11 +1,5 @@
-extern void A_init(void);
-extern void B_init(void);
-extern void A_input(struct pkt);
-extern void B_input(struct pkt);
-extern void A_output(struct msg);
-extern void A_timerinterrupt(void);
-
-/* included for extension to bidirectional communication */
-#define BIDIRECTIONAL 0       /*  0 = A->B  1 =  A<->B */
-extern void B_output(struct msg);
-extern void B_timerinterrupt(void);
+/* gbn.h — stub so emulator.c can compile */
+#ifndef GBN_H
+#define GBN_H
+#define BIDIRECTIONAL 0 /* 题目一直只测单向 A→B */
+#endif
